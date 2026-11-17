@@ -52,6 +52,10 @@
       <button data-v="mobile" class="on">スマホ表示</button>
       <button data-v="desktop">PC表示</button>
     </div>
+    <div class="seg" id="quality">
+      <button data-v="1" class="on">標準画質（長いページ向け）</button>
+      <button data-v="2">高画質</button>
+    </div>
     <div class="row">
       <button class="btn sub" id="paste">貼り付け</button>
       <button class="btn" id="go">スクショする</button>
@@ -77,6 +81,7 @@
 <script>
 const $ = s => document.querySelector(s);
 let mode = 'mobile';
+let scale = '1';
 let blob = null;
 let fileName = 'screenshot.png';
 
@@ -84,6 +89,12 @@ $('#mode').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   mode = b.dataset.v;
   document.querySelectorAll('#mode button').forEach(x => x.classList.toggle('on', x === b));
+});
+
+$('#quality').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  scale = b.dataset.v;
+  document.querySelectorAll('#quality button').forEach(x => x.classList.toggle('on', x === b));
 });
 
 $('#paste').addEventListener('click', async () => {
@@ -114,9 +125,9 @@ function apiUrl(target) {
   });
   if (mode === 'mobile') {
     p.set('viewport.width', '390'); p.set('viewport.height', '844');
-    p.set('viewport.deviceScaleFactor', '2'); p.set('viewport.isMobile', 'true'); p.set('viewport.hasTouch', 'true');
+    p.set('viewport.deviceScaleFactor', scale); p.set('viewport.isMobile', 'true'); p.set('viewport.hasTouch', 'true');
   } else {
-    p.set('viewport.width', '1440'); p.set('viewport.height', '900'); p.set('viewport.deviceScaleFactor', '1');
+    p.set('viewport.width', '1440'); p.set('viewport.height', '900'); p.set('viewport.deviceScaleFactor', scale);
   }
   return 'https://api.microlink.io/?' + p.toString();
 }
@@ -150,7 +161,7 @@ async function run() {
     await new Promise((ok, ng) => { $('#shot').onload = ok; $('#shot').onerror = () => ng(new Error('画像の表示に失敗しました')); });
     $('#result').style.display = 'block';
     const w = $('#shot').naturalWidth, h = $('#shot').naturalHeight;
-    setStatus(`撮影完了 ✅（${w}×${h}px）`);
+    setStatus(`撮影完了 ✅（${w}×${h}px）` + (w*h > 16000000 ? '\n⚠️ 画像が大きすぎて途中で切れるかもしれません。「標準画質」で撮り直してください' : ''));
     addHistory(target);
     $('#result').scrollIntoView({ behavior: 'smooth' });
   } catch (e) {
