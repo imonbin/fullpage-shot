@@ -31,7 +31,8 @@
   #status { font-size:14px; color:var(--sub); min-height:20px; margin:4px 2px 10px; white-space:pre-wrap; }
   #status.err { color:var(--err); }
   #result { display:none; }
-  #shot { width:100%; display:block; border-radius:10px; background:#000; -webkit-touch-callout:default; }
+  .shot { width:100%; display:block; border-radius:10px; background:#000; -webkit-touch-callout:default; }
+  .partlabel { font-size:13px; color:var(--sub); text-align:center; margin:10px 0 6px; }
   .hint { font-size:13px; color:var(--sub); line-height:1.6; margin-top:10px; }
   .spin { display:inline-block; width:14px; height:14px; border:2px solid var(--sub); border-top-color:transparent;
     border-radius:50%; animation:r 0.8s linear infinite; vertical-align:-2px; margin-right:6px; }
@@ -65,7 +66,7 @@
   <div id="status"></div>
 
   <div id="result" class="card">
-    <img id="shot" alt="スクリーンショット">
+    <div id="shots"></div>
     <div class="row">
       <button class="btn ok" id="save">写真に保存</button>
     </div>
@@ -82,8 +83,6 @@
 const $ = s => document.querySelector(s);
 let mode = 'mobile';
 let scale = '1';
-let blob = null;
-let fileName = 'screenshot.png';
 
 $('#mode').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
@@ -118,50 +117,72 @@ function normalize(u) {
   try { return new URL(u).href; } catch { return ''; }
 }
 
-function apiUrl(target) {
+const LIMIT = 16000;   // 撮影ブラウザの1枚あたりの上限（約16384px）手前
+const MAX_PARTS = 8;
+let blobs = [];
+
+function apiUrl(target, offsetCss) {
   const p = new URLSearchParams({
     url: target, screenshot: 'true', fullPage: 'true', meta: 'false',
     waitUntil: 'networkidle2', 'screenshot.type': 'png'
   });
   if (mode === 'mobile') {
     p.set('viewport.width', '390'); p.set('viewport.height', '844');
-    p.set('viewport.deviceScaleFactor', scale); p.set('viewport.isMobile', 'true'); p.set('viewport.hasTouch', 'true');
+    p.set('viewport.isMobile', 'true'); p.set('viewport.hasTouch', 'true');
   } else {
-    p.set('viewport.width', '1440'); p.set('viewport.height', '900'); p.set('viewport.deviceScaleFactor', scale);
+    p.set('viewport.width', '1440'); p.set('viewport.height', '900');
   }
+  p.set('viewport.deviceScaleFactor', scale);
+  if (offsetCss > 0) p.set('styles', `html{margin-top:-${offsetCss}px !important}`);
   return 'https://api.microlink.io/?' + p.toString();
+}
+
+async function shoot(target, offsetCss) {
+  const res = await fetch(apiUrl(target, offsetCss));
+  const json = await res.json();
+  if (json.status !== 'success' || !json.data?.screenshot?.url) {
+    throw new Error(json.message || '撮影に失敗しました');
+  }
+  const shot = json.data.screenshot;
+  let src, blob = null;
+  try { blob = await (await fetch(shot.url)).blob(); src = URL.createObjectURL(blob); }
+  catch { src = shot.url; }
+  const img = new Image();
+  img.src = src;
+  await new Promise((ok, ng) => { img.onload = ok; img.onerror = () => ng(new Error('画像の表示に失敗しました')); });
+  return { img, blob, h: img.naturalHeight };
 }
 
 async function run() {
   const target = normalize($('#url').value);
   if (!target) { setStatus('URLを正しく入力してください', 'err'); return; }
   $('#url').value = target;
-  $('#go').disabled = true; $('#result').style.display = 'none'; blob = null;
-  setStatus('撮影中…（長いページは20〜40秒ほどかかります）', '', true);
+  $('#go').disabled = true; $('#result').style.display = 'none';
+  $('#shots').innerHTML = ''; blobs = [];
+
+  const host = new URL(target).hostname.replace(/^www\./, '');
+  const d = new Date(), pad = n => String(n).padStart(2, '0');
+  const base = `${host}_${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+  const stepCss = Math.floor(LIMIT / Number(scale)) - 200; // 200pxは重ねて継ぎ目の欠けを防ぐ
 
   try {
-    const res = await fetch(apiUrl(target));
-    const json = await res.json();
-    if (json.status !== 'success' || !json.data?.screenshot?.url) {
-      throw new Error(json.message || '撮影に失敗しました');
+    let part = 0, offset = 0, more = true;
+    while (more && part < MAX_PARTS) {
+      part++;
+      setStatus(part === 1 ? '撮影中…（長いページは20〜40秒ほどかかります）' : `ページが長いので続きを撮影中…（${part}枚目）`, '', true);
+      const r = await shoot(target, offset);
+      r.img.className = 'shot';
+      if (part > 1) { const lb = document.createElement('div'); lb.className = 'partlabel'; lb.textContent = `▼ ${part}枚目`; $('#shots').appendChild(lb); }
+      $('#shots').appendChild(r.img);
+      $('#result').style.display = 'block';
+      if (r.blob) blobs.push(new File([r.blob], `${base}${part > 1 || r.h >= LIMIT ? '_' + part : ''}.png`, { type: r.blob.type || 'image/png' }));
+      more = r.h >= LIMIT;
+      offset += stepCss;
     }
-    const imgUrl = json.data.screenshot.url;
-    const host = new URL(target).hostname.replace(/^www\./, '');
-    const d = new Date(), pad = n => String(n).padStart(2, '0');
-    fileName = `${host}_${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}.png`;
-
-    setStatus('画像を読み込み中…', '', true);
-    try {
-      const r = await fetch(imgUrl);
-      blob = await r.blob();
-      $('#shot').src = URL.createObjectURL(blob);
-    } catch {
-      $('#shot').src = imgUrl; // 保存ボタンが使えない場合は長押し保存
-    }
-    await new Promise((ok, ng) => { $('#shot').onload = ok; $('#shot').onerror = () => ng(new Error('画像の表示に失敗しました')); });
-    $('#result').style.display = 'block';
-    const w = $('#shot').naturalWidth, h = $('#shot').naturalHeight;
-    setStatus(`撮影完了 ✅（${w}×${h}px）` + (w*h > 16000000 ? '\n⚠️ 画像が大きすぎて途中で切れるかもしれません。「標準画質」で撮り直してください' : ''));
+    const note = part > 1 ? `\n長いページなので${part}枚に分けました（つなぎ目は少し重なっています）` : '';
+    const cap = (part >= MAX_PARTS && more) ? `\n⚠️ ${MAX_PARTS}枚で打ち切りました` : '';
+    setStatus(`撮影完了 ✅${note}${cap}`);
+    $('#save').textContent = part > 1 ? `写真に保存（${part}枚）` : '写真に保存';
     addHistory(target);
     $('#result').scrollIntoView({ behavior: 'smooth' });
   } catch (e) {
@@ -174,14 +195,11 @@ async function run() {
 }
 
 async function save() {
-  if (blob && navigator.canShare) {
-    const file = new File([blob], fileName, { type: blob.type || 'image/png' });
-    if (navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file] }); return; }
-      catch (e) { if (e.name === 'AbortError') return; }
-    }
+  if (blobs.length && navigator.canShare && navigator.canShare({ files: blobs })) {
+    try { await navigator.share({ files: blobs }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
   }
-  setStatus('画像を長押しして「"写真"に保存」を選んでください');
+  setStatus('画像を1枚ずつ長押しして「"写真"に保存」を選んでください');
 }
 
 function getHist() { try { return JSON.parse(localStorage.getItem('fps_hist') || '[]'); } catch { return []; } }
